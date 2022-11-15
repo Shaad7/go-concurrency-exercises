@@ -20,17 +20,23 @@ package main
 import (
 	"errors"
 	"log"
+	"sync"
+	"time"
 )
+
+const SessionLifeCycle = time.Second * 5
 
 // SessionManager keeps track of all sessions from creation, updating
 // to destroying.
 type SessionManager struct {
 	sessions map[string]Session
+	ml       sync.Mutex
 }
 
 // Session stores the session's data
 type Session struct {
-	Data map[string]interface{}
+	Data         map[string]interface{}
+	CreationTime time.Time
 }
 
 // NewSessionManager creates a new sessionManager
@@ -38,7 +44,7 @@ func NewSessionManager() *SessionManager {
 	m := &SessionManager{
 		sessions: make(map[string]Session),
 	}
-
+	go m.RemoveExpiredSession()
 	return m
 }
 
@@ -48,12 +54,28 @@ func (m *SessionManager) CreateSession() (string, error) {
 	if err != nil {
 		return "", err
 	}
-
+	m.ml.Lock()
+	defer m.ml.Unlock()
 	m.sessions[sessionID] = Session{
-		Data: make(map[string]interface{}),
+		Data:         make(map[string]interface{}),
+		CreationTime: time.Now(),
 	}
 
 	return sessionID, nil
+}
+
+func (m *SessionManager) RemoveExpiredSession() {
+	tick := time.Tick(time.Second)
+	for {
+		<-tick
+		m.ml.Lock()
+		for sessionID, session := range m.sessions {
+			if time.Since(session.CreationTime) >= SessionLifeCycle {
+				delete(m.sessions, sessionID)
+			}
+		}
+		m.ml.Unlock()
+	}
 }
 
 // ErrSessionNotFound returned when sessionID not listed in
@@ -63,6 +85,8 @@ var ErrSessionNotFound = errors.New("SessionID does not exists")
 // GetSessionData returns data related to session if sessionID is
 // found, errors otherwise
 func (m *SessionManager) GetSessionData(sessionID string) (map[string]interface{}, error) {
+	m.ml.Lock()
+	defer m.ml.Unlock()
 	session, ok := m.sessions[sessionID]
 	if !ok {
 		return nil, ErrSessionNotFound
@@ -72,6 +96,8 @@ func (m *SessionManager) GetSessionData(sessionID string) (map[string]interface{
 
 // UpdateSessionData overwrites the old session data with the new one
 func (m *SessionManager) UpdateSessionData(sessionID string, data map[string]interface{}) error {
+	m.ml.Lock()
+	defer m.ml.Unlock()
 	_, ok := m.sessions[sessionID]
 	if !ok {
 		return ErrSessionNotFound
@@ -79,7 +105,8 @@ func (m *SessionManager) UpdateSessionData(sessionID string, data map[string]int
 
 	// Hint: you should renew expiry of the session here
 	m.sessions[sessionID] = Session{
-		Data: data,
+		Data:         data,
+		CreationTime: time.Now(),
 	}
 
 	return nil
@@ -104,7 +131,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("Update session data, set website to longhoang.de")
+	log.Println(".update session data, set website to longhoang.de")
 
 	// Retrieve data from manager again
 	updatedData, err := m.GetSessionData(sID)
